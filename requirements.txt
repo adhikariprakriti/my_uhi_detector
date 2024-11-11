@@ -2,3 +2,7 @@ numpy
 rasterio
 matplotlib
 scikit-learn
+folium
+geopandas
+osmnx
+pyproj
