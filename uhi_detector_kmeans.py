@@ -3,8 +3,9 @@ import numpy as np
 import rasterio
 import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 
+# Define directories for data and results
 data_dir = 'data/landsat/'
 processed_dir = 'data/processed/kmeans/'
 results_dir = 'data/results/kmeans/'
@@ -14,18 +15,20 @@ os.makedirs(processed_dir, exist_ok=True)
 os.makedirs(results_dir, exist_ok=True)
 os.makedirs(visualizations_dir, exist_ok=True)
 
+# Define file paths
 red_band_path = os.path.join(data_dir, 'LC08_L1TP_020032_20240727_20240801_02_T1_B4.TIF')
 nir_band_path = os.path.join(data_dir, 'LC08_L1TP_020032_20240727_20240801_02_T1_B5.TIF')
 thermal_band_path = os.path.join(data_dir, 'LC08_L1TP_020032_20240727_20240801_02_T1_B10.TIF')
 ndvi_output_path = os.path.join(processed_dir, 'ndvi.tif')
 lst_output_path = os.path.join(processed_dir, 'lst.tif')
-uhi_output_path = os.path.join(results_dir, 'uhi_kmeans_2_clusters.tif')
+uhi_output_path = os.path.join(results_dir, 'uhi_kmeans.tif')
 
 ndvi_plot_path = os.path.join(visualizations_dir, 'ndvi_map.png')
 lst_plot_path = os.path.join(visualizations_dir, 'lst_map.png')
 kmeans_plot_path = os.path.join(visualizations_dir, 'kmeans_result.png')
 uhi_plot_path = os.path.join(visualizations_dir, 'uhi_detection.png')
 
+# Function to calculate NDVI
 def calculate_ndvi(red_band_path, nir_band_path, output_path):
     with rasterio.open(red_band_path) as red_src:
         red = red_src.read(1).astype(float)
@@ -34,11 +37,9 @@ def calculate_ndvi(red_band_path, nir_band_path, output_path):
     with rasterio.open(nir_band_path) as nir_src:
         nir = nir_src.read(1).astype(float)
 
-    # Add small epsilon to avoid division by zero
-    epsilon = 1e-10
-    ndvi = (nir - red) / (nir + red + epsilon)
-    ndvi = np.clip(ndvi, -1, 1)  # Clip values to valid NDVI range
-    ndvi[~np.isfinite(ndvi)] = 0  # Handle any remaining invalid values
+    ndvi = (nir - red) / (nir + red + 1e-10)  # Avoid division by zero
+    ndvi = np.clip(ndvi, -1, 1)  # NDVI range
+    ndvi[~np.isfinite(ndvi)] = 0  # Handle invalid values
 
     profile.update(dtype=rasterio.float32, count=1)
     with rasterio.open(output_path, 'w', **profile) as dst:
@@ -46,95 +47,105 @@ def calculate_ndvi(red_band_path, nir_band_path, output_path):
 
     return ndvi
 
+# Function to calculate LST
 def calculate_lst(thermal_band_path, output_path):
     with rasterio.open(thermal_band_path) as thermal_src:
         thermal = thermal_src.read(1).astype(float)
         profile = thermal_src.profile
 
-    # Convert DN to radiance and then to temperature
-    ML = 3.342e-4  # Multiplicative rescaling factor
-    AL = 0.1      # Additive rescaling factor
-    
-    radiance = thermal * ML + AL
-    lst = (radiance - 273.15)  # Convert to Celsius
+    ML, AL = 0.0003342, 0.1  # Radiance scaling factors
+    K1, K2 = 774.89, 1321.08  # Thermal constants from metadata
 
-    # Filter out invalid values
+    radiance = thermal * ML + AL
+    lst = K2 / np.log((K1 / radiance) + 1) - 273.15  # Convert to Celsius
     lst[~np.isfinite(lst)] = np.nan
-    
+
     profile.update(dtype=rasterio.float32, count=1)
     with rasterio.open(output_path, 'w', **profile) as dst:
         dst.write(lst.astype(rasterio.float32), 1)
 
     return lst
 
+# Function to perform K-means clustering
 def kmeans_clustering(lst, ndvi, n_clusters=5):
     lst_flat = lst.flatten()
     ndvi_flat = ndvi.flatten()
-    valid_mask = (
-        np.isfinite(lst_flat) & 
-        np.isfinite(ndvi_flat) & 
-        (lst_flat != 0) & 
-        (ndvi_flat != 0)
-    )
+    valid_mask = np.isfinite(lst_flat) & np.isfinite(ndvi_flat)
     valid_lst = lst_flat[valid_mask]
     valid_ndvi = ndvi_flat[valid_mask]
-    
-    features = np.vstack([valid_lst, valid_ndvi]).T
-    scaler = MinMaxScaler()
+
+    # Prepare features
+    features = np.vstack((valid_lst, valid_ndvi)).T
+
+    # Standardize features
+    scaler = StandardScaler()
     features_scaled = scaler.fit_transform(features)
-    
-    kmeans = KMeans(
-        n_clusters=n_clusters,
-        random_state=42,
-        n_init=10,
-        max_iter=300
-    )
-    
+
+    # Apply K-means clustering
+    kmeans = KMeans(n_clusters=n_clusters, init='k-means++', random_state=42, n_init=10, max_iter=300)
     cluster_labels = kmeans.fit_predict(features_scaled)
-    
-    # Create output image
-    labels_image = np.full(lst_flat.shape, -1, dtype=np.int32)
-    labels_image[valid_mask] = cluster_labels
-    labels_image = labels_image.reshape(lst.shape)
-    
-    return {
+
+    # Create full-sized label image
+    labels_image = np.full(lst.shape, -1, dtype=np.int32)
+    labels_image.flat[valid_mask] = cluster_labels
+
+    # Rescale cluster centers back to original feature ranges
+    cluster_centers = scaler.inverse_transform(kmeans.cluster_centers_)
+    cluster_info = {
         'labels': labels_image,
-        'centers': kmeans.cluster_centers_,
-        'scaler': scaler,
+        'centers': cluster_centers,
         'inertia': kmeans.inertia_
     }
 
-def identify_uhi_cluster(cluster_info, lst):
-    labels = cluster_info['labels']
-    
-    cluster_temps = []
-    for i in range(len(cluster_info['centers'])):
-        mask = (labels == i)
-        if np.any(mask):
-            mean_temp = np.nanmean(lst[mask])
-            cluster_temps.append((i, mean_temp))
-    
-    uhi_cluster = max(cluster_temps, key=lambda x: x[1])[0]
-    
-    uhi_mask = (labels == uhi_cluster).astype(np.uint8)
-    
-    return uhi_mask, uhi_cluster
+    # Identify UHI cluster
+    uhi_cluster = identify_uhi_cluster(cluster_info, valid_lst, valid_ndvi, cluster_labels)
 
-def save_plot(data, title, cmap, plot_path, vmin=None, vmax=None):
-    plt.figure(figsize=(12, 8))
-    
-    # Handle different types of plots
-    if title == 'K-means Clusters':
-        # Create a masked array for better visualization
-        masked_data = np.ma.masked_where(data == -1, data)
-        im = plt.imshow(masked_data, cmap='viridis', aspect='auto')
-    else:
-        im = plt.imshow(data, cmap=cmap, aspect='auto', vmin=vmin, vmax=vmax)
-    
-    plt.colorbar(im, label=title)
+    # Create UHI mask
+    uhi_mask = (labels_image == uhi_cluster).astype(np.uint8)
+
+    return uhi_mask, cluster_info
+
+# Function to identify the UHI cluster
+def identify_uhi_cluster(cluster_info, valid_lst, valid_ndvi, cluster_labels):
+    centers = cluster_info['centers']
+    lst_centers = centers[:, 0]
+    ndvi_centers = centers[:, 1]
+
+    # Calculate cluster-level statistics
+    cluster_temps = []
+    for i in range(len(centers)):
+        mask = (cluster_labels == i)
+        mean_temp = np.mean(valid_lst[mask])
+        mean_ndvi = np.mean(valid_ndvi[mask])
+        std_temp = np.std(valid_lst[mask])  # Measure variability
+        cluster_temps.append((i, mean_temp, mean_ndvi, std_temp))
+
+    # Calculate UHI score (higher mean LST, lower mean NDVI, lower variability)
+    uhi_scores = [
+        (i, mean_temp - mean_ndvi - 0.1 * std_temp)  # Weighted scoring
+        for i, mean_temp, mean_ndvi, std_temp in cluster_temps
+    ]
+
+    # Identify the cluster with the highest UHI score
+    uhi_cluster = max(uhi_scores, key=lambda x: x[1])[0]
+
+    # Debugging: Print cluster centers, scores, and selection
+    print("Cluster Centers and Scores:")
+    for i, (lst_c, ndvi_c, score) in enumerate(zip(lst_centers, ndvi_centers, [s[1] for s in uhi_scores])):
+        print(f"Cluster {i}: LST Center = {lst_c:.2f}, NDVI Center = {ndvi_c:.2f}, Score = {score:.2f}")
+
+    print(f"Identified UHI Cluster: {uhi_cluster}")
+    return uhi_cluster
+
+# Function to save plots
+def save_plot(data, title, cmap, filename, vmin=None, vmax=None):
+    plt.figure(figsize=(10, 8))
+    plt.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax)
+    plt.colorbar()
     plt.title(title)
     plt.axis('off')
-    plt.savefig(plot_path, bbox_inches='tight', dpi=300)
+    plt.tight_layout()
+    plt.savefig(filename, dpi=300)
     plt.close()
 
 def main():
@@ -148,23 +159,21 @@ def main():
     lst = calculate_lst(thermal_band_path, lst_output_path)
     save_plot(lst, 'Land Surface Temperature (°C)', 'hot', lst_plot_path)
 
-    # Perform clustering
+    # Perform K-means clustering
+    n_clusters = 5  # You can adjust this number
     print("Performing K-means clustering...")
-    cluster_info = kmeans_clustering(lst, ndvi, n_clusters=2)
-    save_plot(cluster_info['labels'], 'K-means Clusters', 'coolwarm', kmeans_plot_path)
+    uhi_mask, cluster_info = kmeans_clustering(lst, ndvi, n_clusters=n_clusters)
+    save_plot(uhi_mask, 'UHI Detection via K-means', 'gray', uhi_plot_path)
 
-    # Identify UHI
-    print("Identifying UHI...")
-    uhi_mask, uhi_cluster = identify_uhi_cluster(cluster_info, lst)
-    save_plot(uhi_mask, 'Urban Heat Island Detection', 'coolwarm', uhi_plot_path)
-
-    # Save UHI result
+    # Save the UHI mask to a GeoTIFF file
     with rasterio.open(thermal_band_path) as src:
         profile = src.profile
         profile.update(dtype=rasterio.uint8, count=1)
+        with rasterio.open(uhi_output_path, 'w', **profile) as dst:
+            dst.write(uhi_mask.astype(rasterio.uint8), 1)
 
-    with rasterio.open(uhi_output_path, 'w', **profile) as dst:
-        dst.write(uhi_mask.astype(rasterio.uint8), 1)
+    print(f"UHI mask saved to {uhi_output_path}")
+
 
     print("Processing complete!")
 
