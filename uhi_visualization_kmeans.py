@@ -12,46 +12,54 @@ def visualize_ndvi(ndvi_path, output_path):
         ndvi = src.read(1)
         ndvi[ndvi == src.nodata] = np.nan
 
-    plt.figure(figsize=(10, 8))
-    plt.imshow(ndvi, cmap='RdYlGn', vmin=-1, vmax=1)
-    plt.colorbar(label='NDVI')
-    plt.title('NDVI')
+    plt.figure(figsize=(10, 10))
+    cmap = plt.cm.YlGn  # Match Random Forest colormap
+    cmap.set_under(color='white')
+    im = plt.imshow(ndvi, cmap=cmap, vmin=-1, vmax=1)
+    cbar = plt.colorbar(im, fraction=0.046, pad=0.04)
+    cbar.set_label('NDVI')
+    plt.title('Normalized Difference Vegetation Index (NDVI)')
     plt.axis('off')
     plt.tight_layout()
-    plt.savefig(output_path, dpi=300)
+    plt.savefig(output_path, bbox_inches='tight', dpi=300)
     plt.close()
     print(f"NDVI map saved to {output_path}")
+
 
 def visualize_lst(lst_path, output_path):
     with rasterio.open(lst_path) as src:
         lst = src.read(1)
-        lst[lst == src.nodata] = np.nan
-
-    plt.figure(figsize=(10, 8))
-    plt.imshow(lst, cmap='hot')
-    plt.colorbar(label='Temperature (°C)')
-    plt.title('Land Surface Temperature')
+    plt.figure(figsize=(10, 10))
+    cmap = plt.cm.jet
+    cmap.set_bad(color='white')
+    im = plt.imshow(lst, cmap=cmap)
+    cbar = plt.colorbar(im, fraction=0.046, pad=0.04)
+    cbar.set_label('Temperature (°C)')
+    plt.title('Land Surface Temperature (LST)')
     plt.axis('off')
     plt.tight_layout()
-    plt.savefig(output_path, dpi=300)
+    plt.savefig(output_path, bbox_inches='tight', dpi=300)
     plt.close()
     print(f"LST map saved to {output_path}")
 
+
 def visualize_uhi(uhi_mask_path, output_path, title='UHI Detection via K-means'):
     with rasterio.open(uhi_mask_path) as src:
-        uhi_mask = src.read(1).astype(float)  # Convert to float to allow NaN assignments
-        uhi_mask[uhi_mask == src.nodata] = np.nan  # Replace nodata values with NaN
-
-    plt.figure(figsize=(10, 8))
-    plt.imshow(uhi_mask, cmap='gray')
-    plt.colorbar(label='UHI Mask')
+        uhi_mask = src.read(1).astype(float) 
+    plt.figure(figsize=(10, 10))
+    cmap = plt.cm.RdBu_r 
+    cmap.set_bad(color='white')
+    masked_data = np.ma.masked_where(np.isnan(uhi_mask), uhi_mask)
+    im = plt.imshow(masked_data, cmap=cmap)
+    cbar = plt.colorbar(im, fraction=0.046, pad=0.04)
+    cbar.set_ticks([0, 1])
+    cbar.set_ticklabels(['Non-UHI', 'UHI'])
     plt.title(title)
     plt.axis('off')
     plt.tight_layout()
-    plt.savefig(output_path, dpi=300)
+    plt.savefig(output_path, bbox_inches='tight', dpi=300)
     plt.close()
     print(f"UHI detection map saved to {output_path}")
-
 
 if __name__ == "__main__":
     results_dir = 'data/processed/kmeans/'
