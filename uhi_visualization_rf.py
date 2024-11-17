@@ -151,9 +151,9 @@ def visualize_with_folium(uhi_mask_path, building_geojson_path, folium_map_outpu
         name='Buildings',
         style_function=lambda x: {
             'fillColor': 'gray',
-            'color': 'black',
-            'weight': 1,
-            'fillOpacity': 0.5
+            'color': 'gray',
+            'weight': 0.3,
+            'fillOpacity': 0.2
         },
         tooltip=folium.GeoJsonTooltip(fields=[], aliases=[], localize=True)
     ).add_to(folium_map)
@@ -219,9 +219,9 @@ def analyze_buildings_uhi(uhi_mask_path, building_geojson_path, analysis_output_
 
 def main():
     data_dir = 'data/landsat/'
-    processed_dir = 'data/processed/random_forest/'
-    results_dir = 'data/results/random_forest/'
-    visualizations_dir = 'visualization/random_forest/'
+    processed_dir = 'data/processed/simple/'
+    results_dir = 'data/results/simple/'
+    visualizations_dir = 'visualization/simple/'
     building_geojson_path = 'data/buildings/buildings_columbus.geojson' 
     
     os.makedirs(processed_dir, exist_ok=True)
@@ -235,7 +235,7 @@ def main():
     
     ndvi_visual_path = os.path.join(visualizations_dir, 'ndvi.png')
     lst_visual_path = os.path.join(visualizations_dir, 'lst.png')
-    uhi_visual_path = os.path.join(visualizations_dir, 'uhi_detection_rf.png')
+    uhi_visual_path = os.path.join(visualizations_dir, 'uhi_detection.png')
     folium_map_output = os.path.join(visualizations_dir, 'uhi_detection_map.html')
     analysis_output_path = os.path.join(results_dir, 'buildings_uhi_analysis.txt')
     
