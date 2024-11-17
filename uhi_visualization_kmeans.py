@@ -4,8 +4,12 @@ import rasterio
 import matplotlib.pyplot as plt
 import geopandas as gpd
 import folium
+from rasterio.warp import calculate_default_transform, reproject, Resampling
 from shapely.geometry import mapping
-from rasterio.mask import mask
+from folium import raster_layers
+from branca.element import Template, MacroElement
+from PIL import Image
+import pyproj
 
 def visualize_ndvi(ndvi_path, output_path):
     with rasterio.open(ndvi_path) as src:
@@ -61,11 +65,126 @@ def visualize_uhi(uhi_mask_path, output_path, title='UHI Detection via K-means')
     plt.close()
     print(f"UHI detection map saved to {output_path}")
 
+
+def visualize_kmeans_with_osm(uhi_mask_path, osm_boundary_path, folium_map_output_path):
+    # Read UHI mask raster
+    with rasterio.open(uhi_mask_path) as src:
+        uhi_mask = src.read(1)
+        uhi_profile = src.profile
+        uhi_transform = src.transform
+        uhi_crs = src.crs
+
+    # Define destination CRS (Web Mercator)
+    dst_crs = 'EPSG:3857'
+
+    # Calculate transformation for reprojecting UHI mask
+    transform, width, height = calculate_default_transform(
+        uhi_crs, dst_crs, src.width, src.height, *src.bounds
+    )
+    kwargs = src.meta.copy()
+    kwargs.update({
+        'crs': dst_crs,
+        'transform': transform,
+        'width': width,
+        'height': height
+    })
+
+    # Reproject UHI mask to Web Mercator
+    uhi_mask_reprojected = np.empty((height, width), dtype=np.int32)
+    reproject(
+        source=uhi_mask,
+        destination=uhi_mask_reprojected,
+        src_transform=uhi_transform,
+        src_crs=uhi_crs,
+        dst_transform=transform,
+        dst_crs=dst_crs,
+        resampling=Resampling.nearest
+    )
+
+    # Save reprojected UHI mask
+    uhi_mask_reprojected_path = 'data/processed/kmeans/uhi_mask_reprojected.tif'
+    os.makedirs(os.path.dirname(uhi_mask_reprojected_path), exist_ok=True)
+    with rasterio.open(uhi_mask_reprojected_path, 'w', **kwargs) as dst:
+        dst.write(uhi_mask_reprojected, 1)
+
+    # Reproject OSM boundary to Web Mercator
+    osm_boundary = gpd.read_file(osm_boundary_path)
+    osm_boundary = osm_boundary.to_crs(dst_crs)
+
+    # Calculate bounds in lat/lon (EPSG:4326)
+    bounds = rasterio.transform.array_bounds(height, width, transform)
+    minx, miny, maxx, maxy = bounds
+    transformer = pyproj.Transformer.from_crs(dst_crs, 'EPSG:4326', always_xy=True)
+    min_lon, min_lat = transformer.transform(minx, miny)
+    max_lon, max_lat = transformer.transform(maxx, maxy)
+
+    # Initialize Folium map at the center
+    center_lon = (min_lon + max_lon) / 2
+    center_lat = (min_lat + max_lat) / 2
+    folium_map = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles='OpenStreetMap')
+
+    # Create RGBA image for UHI mask
+    rgba_image = np.zeros((height, width, 4), dtype=np.uint8)
+    rgba_image[uhi_mask_reprojected == 0] = [0, 0, 255, 100]  # Blue for Non-UHI
+    rgba_image[uhi_mask_reprojected == 1] = [255, 0, 0, 100]  # Red for UHI
+
+    # Convert to PIL Image and save
+    img = Image.fromarray(rgba_image, 'RGBA')
+    uhi_mask_png = 'data/processed/kmeans/uhi_mask.png'
+    img.save(uhi_mask_png)
+
+    # Use absolute path for the image overlay
+    uhi_mask_png_path = os.path.abspath(uhi_mask_png)
+
+    # Add UHI mask overlay to Folium map
+    folium.raster_layers.ImageOverlay(
+        name='K-Means UHI Mask',
+        image=uhi_mask_png_path,
+        bounds=[[min_lat, min_lon], [max_lat, max_lon]],
+        opacity=0.7,
+        interactive=True,
+        cross_origin=False,
+        zindex=1
+    ).add_to(folium_map)
+
+    # Add OSM boundary
+    folium.GeoJson(
+        osm_boundary,
+        name='OSM Boundary',
+        style_function=lambda x: {
+            'fillColor': 'none',
+            'color': 'black',
+            'weight': 2,
+            'opacity': 1
+        }
+    ).add_to(folium_map)
+
+    # Add legend for UHI mask
+    template = """
+    {% macro html(this, kwargs) %}
+    <div style="position: fixed; bottom: 50px; left: 50px; width: 200px; height: 90px; 
+                border:2px solid grey; z-index:9999; font-size:14px;
+                background-color: white;">
+        <b>K-Means UHI Legend</b><br>
+        <i style="background:blue;opacity:0.7;width:12px;height:12px;display:inline-block;"></i> Non-UHI<br>
+        <i style="background:red;opacity:0.7;width:12px;height:12px;display:inline-block;"></i> UHI
+    </div>
+    {% endmacro %}
+    """
+    macro = MacroElement()
+    macro._template = Template(template)
+    folium_map.get_root().add_child(macro)
+
+    # Add layer control and save map
+    folium.LayerControl().add_to(folium_map)
+    folium_map.save(folium_map_output_path)
+    print(f"Folium map with K-means UHI overlay saved to {folium_map_output_path}")
+
 if __name__ == "__main__":
     results_dir = 'data/processed/kmeans/'
     visualizations_dir = 'visualization/kmeans/'
     uhi_results_dir = 'data/results/kmeans/'
-
+    osm_boundary_path = 'data/osm/columbus_boundary.shp'
 
     ndvi_path = os.path.join(results_dir, 'ndvi.tif')
     lst_path = os.path.join(results_dir, 'lst.tif')
@@ -74,8 +193,12 @@ if __name__ == "__main__":
     ndvi_plot_path = os.path.join(visualizations_dir, 'ndvi_map.png')
     lst_plot_path = os.path.join(visualizations_dir, 'lst_map.png')
     uhi_plot_path = os.path.join(visualizations_dir, 'uhi_detection.png')
+    folium_map_output_path = os.path.join(visualizations_dir, 'uhi_kmeans_map.html')
 
     # Create visualizations
     visualize_ndvi(ndvi_path, ndvi_plot_path)
     visualize_lst(lst_path, lst_plot_path)
     visualize_uhi(uhi_mask_path, uhi_plot_path)
+
+    # Create interactive Folium map
+    visualize_kmeans_with_osm(uhi_mask_path, osm_boundary_path, folium_map_output_path)
