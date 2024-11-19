@@ -1,9 +1,9 @@
 import os
 import numpy as np
 import rasterio
-import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
 
 # Define directories for data and results
 data_dir = 'data/landsat/'
@@ -22,7 +22,6 @@ thermal_band_path = os.path.join(data_dir, 'LC08_L1TP_020032_20240727_20240801_0
 ndvi_output_path = os.path.join(processed_dir, 'ndvi.tif')
 lst_output_path = os.path.join(processed_dir, 'lst.tif')
 uhi_output_path = os.path.join(results_dir, 'uhi_kmeans.tif')
-
 ndvi_plot_path = os.path.join(visualizations_dir, 'ndvi_map.png')
 lst_plot_path = os.path.join(visualizations_dir, 'lst_map.png')
 kmeans_plot_path = os.path.join(visualizations_dir, 'kmeans_result.png')
@@ -32,32 +31,37 @@ uhi_plot_path = os.path.join(visualizations_dir, 'uhi_detection.png')
 def calculate_ndvi(red_band_path, nir_band_path, output_path):
     with rasterio.open(red_band_path) as red_src:
         red = red_src.read(1).astype(float)
-        profile = red_src.profile
+        red_meta = red_src.meta.copy()
 
     with rasterio.open(nir_band_path) as nir_src:
         nir = nir_src.read(1).astype(float)
 
     ndvi = (nir - red) / (nir + red + 1e-10)  # Avoid division by zero
     ndvi = np.clip(ndvi, -1, 1)  # NDVI range
-    ndvi[~np.isfinite(ndvi)] = 0  # Handle invalid values
 
-    profile.update(dtype=rasterio.float32, count=1)
-    with rasterio.open(output_path, 'w', **profile) as dst:
+    # Handle invalid values
+    ndvi[~np.isfinite(ndvi)] = np.nan
+
+    red_meta.update(dtype=rasterio.float32, count=1, nodata=np.nan)
+    with rasterio.open(output_path, 'w', **red_meta) as dst:
         dst.write(ndvi.astype(rasterio.float32), 1)
+
+    # Debug: Print NDVI statistics
+    print(f"NDVI - min: {np.nanmin(ndvi):.4f}, max: {np.nanmax(ndvi):.4f}, mean: {np.nanmean(ndvi):.4f}")
 
     return ndvi
 
-# Function to calculate LST
 def calculate_lst(thermal_band_path, output_path):
     with rasterio.open(thermal_band_path) as thermal_src:
         thermal = thermal_src.read(1).astype(float)
         profile = thermal_src.profile
 
-    ML, AL = 0.0003342, 0.1  # Radiance scaling factors
-    K1, K2 = 774.89, 1321.08  # Thermal constants from metadata
+    # Convert DN to radiance and then to temperature
+    ML = 3.342e-4
+    AL = 0.1
 
     radiance = thermal * ML + AL
-    lst = K2 / np.log((K1 / radiance) + 1) - 273.15  # Convert to Celsius
+    lst = (radiance - 273.15)
     lst[~np.isfinite(lst)] = np.nan
 
     profile.update(dtype=rasterio.float32, count=1)
@@ -65,6 +69,44 @@ def calculate_lst(thermal_band_path, output_path):
         dst.write(lst.astype(rasterio.float32), 1)
 
     return lst
+'''
+# Function to calculate LST
+def calculate_lst(thermal_band_path, output_path):
+    with rasterio.open(thermal_band_path) as thermal_src:
+        thermal = thermal_src.read(1).astype(float)
+        thermal_meta = thermal_src.meta.copy()
+    
+    # Exclude pixels with zero or nodata values
+    invalid_mask = (thermal == 0) | (thermal == thermal_src.nodata)
+    thermal[invalid_mask] = np.nan
+    
+    # Constants for Landsat 8 Thermal Band (Band 10)
+    ML = 0.0003342  # Radiance multiplicative scaling factor
+    AL = 0.1        # Radiance additive scaling factor
+    K1 = 774.8853   # Thermal conversion constant
+    K2 = 1321.0789  # Thermal conversion constant
+
+    # Calculate radiance
+    radiance = ML * thermal + AL
+
+    # Avoid negative or zero radiance values
+    radiance[radiance <= 0] = np.nan
+
+    # Calculate brightness temperature
+    brightness_temp = K2 / np.log((K1 / radiance) + 1) - 273.15  # Convert to Celsius
+
+    # Handle invalid values
+    brightness_temp[~np.isfinite(brightness_temp)] = np.nan
+
+    thermal_meta.update(dtype=rasterio.float32, count=1, nodata=np.nan)
+    with rasterio.open(output_path, 'w', **thermal_meta) as dst:
+        dst.write(brightness_temp.astype(rasterio.float32), 1)
+
+    # Debug: Print LST statistics after cleaning
+    print(f"LST - min: {np.nanmin(brightness_temp):.2f}°C, max: {np.nanmax(brightness_temp):.2f}°C, mean: {np.nanmean(brightness_temp):.2f}°C")
+
+    return brightness_temp
+'''
 
 # Function to perform K-means clustering
 def kmeans_clustering(lst, ndvi, n_clusters=5):
