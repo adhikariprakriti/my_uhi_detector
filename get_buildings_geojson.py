@@ -1,5 +1,7 @@
 import requests
 import json
+import geopandas as gpd
+from shapely.geometry import shape
 
 def get_geojson(city, state):
     url = f"https://nominatim.openstreetmap.org/search?city={city}&state={state}&format=geojson"
@@ -14,10 +16,21 @@ def save_geojson(data, filename):
         json.dump(data, f)
 
 if __name__ == "__main__":
-    city = "Columbus"
+    city = "Dayton"
     state = "Ohio"
-    filename = "columbus_ohio.geojson"
+    filename = "dayton_ohio.geojson"
     
     geojson_data = get_geojson(city, state)
+    
+    # Save GeoJSON data
+    save_geojson(geojson_data, filename)
+    
+    # Convert GeoJSON to Shapefile
+
+    gdf = gpd.GeoDataFrame.from_features(geojson_data["features"])
+    shp_filename = filename.replace(".geojson", ".shp")
+    gdf.to_file(shp_filename)
+    
+    print(f"Shapefile data for {city}, {state} saved to {shp_filename}")
     save_geojson(geojson_data, filename)
     print(f"GeoJSON data for {city}, {state} saved to {filename}")
