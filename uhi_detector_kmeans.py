@@ -51,25 +51,6 @@ def calculate_ndvi(red_band_path, nir_band_path, output_path):
 
     return ndvi
 
-def calculate_lst(thermal_band_path, output_path):
-    with rasterio.open(thermal_band_path) as thermal_src:
-        thermal = thermal_src.read(1).astype(float)
-        profile = thermal_src.profile
-
-    # Convert DN to radiance and then to temperature
-    ML = 3.342e-4
-    AL = 0.1
-
-    radiance = thermal * ML + AL
-    lst = (radiance - 273.15)
-    lst[~np.isfinite(lst)] = np.nan
-
-    profile.update(dtype=rasterio.float32, count=1)
-    with rasterio.open(output_path, 'w', **profile) as dst:
-        dst.write(lst.astype(rasterio.float32), 1)
-
-    return lst
-'''
 # Function to calculate LST
 def calculate_lst(thermal_band_path, output_path):
     with rasterio.open(thermal_band_path) as thermal_src:
@@ -106,13 +87,17 @@ def calculate_lst(thermal_band_path, output_path):
     print(f"LST - min: {np.nanmin(brightness_temp):.2f}°C, max: {np.nanmax(brightness_temp):.2f}°C, mean: {np.nanmean(brightness_temp):.2f}°C")
 
     return brightness_temp
-'''
 
 # Function to perform K-means clustering
-def kmeans_clustering(lst, ndvi, n_clusters=5):
+def kmeans_clustering(lst, ndvi, n_clusters=10, water_threshold=0.1):
     lst_flat = lst.flatten()
     ndvi_flat = ndvi.flatten()
-    valid_mask = np.isfinite(lst_flat) & np.isfinite(ndvi_flat)
+    
+    # Create water mask
+    water_mask = ndvi_flat < water_threshold
+    
+    # Exclude water pixels from clustering
+    valid_mask = np.isfinite(lst_flat) & np.isfinite(ndvi_flat) & ~water_mask
     valid_lst = lst_flat[valid_mask]
     valid_ndvi = ndvi_flat[valid_mask]
 
@@ -144,6 +129,9 @@ def kmeans_clustering(lst, ndvi, n_clusters=5):
 
     # Create UHI mask
     uhi_mask = (labels_image == uhi_cluster).astype(np.uint8)
+
+    # Assign water areas as Non-UHI
+    uhi_mask.flat[water_mask] = 0
 
     return uhi_mask, cluster_info
 
@@ -190,6 +178,14 @@ def save_plot(data, title, cmap, filename, vmin=None, vmax=None):
     plt.savefig(filename, dpi=300)
     plt.close()
 
+def create_water_mask(ndvi, threshold=0.1):
+    """
+    Create a mask for water bodies based on NDVI values.
+    Typically, water bodies have low NDVI values.
+    """
+    water_mask = ndvi < threshold
+    return water_mask
+
 def main():
     # Calculate NDVI
     print("Calculating NDVI...")
@@ -201,10 +197,11 @@ def main():
     lst = calculate_lst(thermal_band_path, lst_output_path)
     save_plot(lst, 'Land Surface Temperature (°C)', 'hot', lst_plot_path)
 
-    # Perform K-means clustering
+    # Perform K-means clustering with water mask exclusion
     n_clusters = 5  # You can adjust this number
-    print("Performing K-means clustering...")
-    uhi_mask, cluster_info = kmeans_clustering(lst, ndvi, n_clusters=n_clusters)
+    water_threshold = 0.1
+    print("Performing K-means clustering with water mask exclusion...")
+    uhi_mask, cluster_info = kmeans_clustering(lst, ndvi, n_clusters=n_clusters, water_threshold=water_threshold)
     save_plot(uhi_mask, 'UHI Detection via K-means', 'gray', uhi_plot_path)
 
     # Save the UHI mask to a GeoTIFF file
@@ -215,8 +212,6 @@ def main():
             dst.write(uhi_mask.astype(rasterio.uint8), 1)
 
     print(f"UHI mask saved to {uhi_output_path}")
-
-
     print("Processing complete!")
 
 if __name__ == "__main__":
