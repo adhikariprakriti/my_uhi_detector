@@ -1,23 +1,37 @@
 import requests
-import json
+import geopandas as gpd
+import os
+import osmnx as ox
 
-def get_geojson(city, state):
-    url = f"https://nominatim.openstreetmap.org/search?city={city}&state={state}&format=geojson"
-    response = requests.get(url)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        raise Exception(f"Error fetching data: {response.status_code}")
+def get_state_boundary(state_name):
+    overpass_url = "http://overpass-api.de/api/interpreter"
+    overpass_query = f"""
+    [out:json];
+    relation
+      ["admin_level"="4"]
+      ["name"="{state_name}"]
+      ["boundary"="administrative"];
+    (._;>;);
+    out body;
+    """
+    response = requests.get(overpass_url, params={'data': overpass_query})
+    data = response.json()
+    return data
 
-def save_geojson(data, filename):
-    with open(filename, 'w') as f:
-        json.dump(data, f)
+def save_state_shapefile(state_name, output_directory):
+    os.makedirs(output_directory, exist_ok=True)
+    data = get_state_boundary(state_name)
+    
+    # Convert OSM data to GeoDataFrame
+    gdf = ox.graph_from_place(state_name, network_type='all')
+    
+    # Define the output file path
+    shp_filename = os.path.join(output_directory, f"{state_name}_boundary.shp")
+    gdf.to_file(shp_filename)
+    print(f"Shapefile saved to {shp_filename}")
 
 if __name__ == "__main__":
-    city = "Columbus"
     state = "Ohio"
-    filename = "columbus_ohio.geojson"
+    osm_path = "./data/osm/"
     
-    geojson_data = get_geojson(city, state)
-    save_geojson(geojson_data, filename)
-    print(f"GeoJSON data for {city}, {state} saved to {filename}")
+    save_state_shapefile(state, osm_path)

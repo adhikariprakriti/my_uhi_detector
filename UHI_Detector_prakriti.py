@@ -14,7 +14,7 @@ import os
 # drive.mount('/content/drive')
 
 
-project_path = '/content/drive/MyDrive/my uhi detector'
+project_path = './'
 os.chdir(project_path)
 
 # ## Step 1: Define Paths and Create Output Directories
